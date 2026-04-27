@@ -1,31 +1,49 @@
 # telegram-star-payments
 
-Create [Telegram Stars](https://core.telegram.org/bots/payments-stars) (XTR) invoice
-links and listen for the `successful_payment` event from your bot — exactly the
-flow that produces links such as:
+Create Telegram invoice links and listen for the `successful_payment` event
+from your bot — works for both:
 
-```
-https://t.me/$8T-Xwi0VYFeVDAAABzfGCSlot30
-```
+- **Telegram Stars** (`XTR`) — the in-app currency, no external provider
+  required. Produces links like `https://t.me/$8T-Xwi0VYFeVDAAABzfGCSlot30`.
+- **Real currencies** (`USD`, `EUR`, `JPY`, ...) via an external payment
+  provider (Stripe / Smart Glocal / Tranzzo / YooKassa / ...) connected
+  through BotFather.
+
+The bot, the invoice link generation, the `pre_checkout_query` and the
+`successful_payment` handlers are exactly the same for both — the only
+differences are `currency`, the `provider_token`, and how amounts are
+encoded.
 
 ## How it works
 
-| Step | What happens                                                                                          | Telegram API                                |
-| ---- | ----------------------------------------------------------------------------------------------------- | ------------------------------------------- |
-| 1    | Your backend asks the Bot API for an invoice link with `currency = "XTR"` and an empty `provider_token`. | [`createInvoiceLink`](https://core.telegram.org/bots/api#createinvoicelink) |
-| 2    | You share the returned `https://t.me/$...` link. Tapping it opens Telegram's native "Pay with Stars" sheet. | —                                           |
-| 3    | Right before charging, Telegram sends your bot a `pre_checkout_query`. **You must answer within 10 seconds**, otherwise the payment is canceled. | [`answerPreCheckoutQuery`](https://core.telegram.org/bots/api#answerprecheckoutquery) |
-| 4    | After charging, your bot receives a regular message whose `successful_payment` field is set. That is the "payment complete" signal. | [`SuccessfulPayment`](https://core.telegram.org/bots/api#successfulpayment) |
-| 5    | Optional: you can refund within 21 days.                                                              | [`refundStarPayment`](https://core.telegram.org/bots/api#refundstarpayment) |
+| Step | What happens                                                                                                  | Telegram API                                                                                  |
+| ---- | ------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| 1    | Your backend asks the Bot API for an invoice link.                                                            | [`createInvoiceLink`](https://core.telegram.org/bots/api#createinvoicelink)                   |
+| 2    | You share the returned `https://t.me/$...` link. Tapping it opens Telegram's native payment sheet.            | —                                                                                             |
+| 3    | Right before charging, Telegram sends your bot a `pre_checkout_query`. **Answer within 10 seconds.**           | [`answerPreCheckoutQuery`](https://core.telegram.org/bots/api#answerprecheckoutquery)         |
+| 4    | After charging, your bot receives a message whose `successful_payment` field is set. That's "payment complete". | [`SuccessfulPayment`](https://core.telegram.org/bots/api#successfulpayment)                   |
+| 5    | Optional refund (Stars: via Bot API; fiat: via the provider's dashboard).                                     | [`refundStarPayment`](https://core.telegram.org/bots/api#refundstarpayment) (Stars only)      |
 
 The `invoice_payload` field round-trips through every step, so set it to your
 internal order id and use it to reconcile the payment with whatever you sold.
 
+### Stars vs fiat
+
+|                       | Stars (`XTR`)                              | Fiat (`USD`, `EUR`, ...)                                                                |
+| --------------------- | ------------------------------------------ | --------------------------------------------------------------------------------------- |
+| `currency`            | `"XTR"`                                    | ISO 4217, e.g. `"USD"`                                                                  |
+| `provider_token`      | `""` (must be empty)                       | required, from BotFather                                                                |
+| Amount encoding       | integer star count (e.g. `1400`)           | integer minor units (`$9.99` → `999`; `¥1000` → `1000`)                                 |
+| Pay sheet             | "⭐ Pay X Stars" — instant in Telegram     | "Pay $9.99" — collects card via Stripe (or other provider)                              |
+| Refunds               | `bot.refund_star_payment(...)`             | provider dashboard (e.g. Stripe Dashboard)                                              |
+| Where it works        | Anywhere Telegram works                    | Wherever your provider supports cards                                                   |
+
 ## Prerequisites
 
 1. Create a bot with [@BotFather](https://t.me/BotFather) and copy its token.
-2. (One-time) In BotFather, open your bot → *Payments* — Stars are available
-   without any external provider, so just keep the default settings.
+2. **For fiat only:** in BotFather, `My Bots → <bot> → Payments`, pick a
+   provider (Stripe is the easiest for USD/EUR), and copy the **Test** token
+   for development. Stars don't need this step.
 3. Python 3.12 and [uv](https://docs.astral.sh/uv/).
 
 ## Setup
@@ -33,7 +51,7 @@ internal order id and use it to reconcile the payment with whatever you sold.
 ```bash
 uv sync
 cp .env.example .env
-# edit .env and put your BOT_TOKEN in
+# edit .env: set BOT_TOKEN and (for fiat) PROVIDER_TOKEN
 ```
 
 ## Usage
@@ -44,26 +62,35 @@ cp .env.example .env
 uv run python main.py
 ```
 
-Then in Telegram:
+In Telegram:
 
 ```
-/buy 1400 Plan - Basic
+/buy_stars 1400 Plan - Basic
+/buy_fiat USD 9.99 Plan - Basic
+/buy_fiat EUR 4.50 Coffee
+/buy_fiat JPY 1000 Onigiri          # zero-decimal currency, handled automatically
+/status <payload>
+/refund <payload>                    # Stars only
 ```
 
-The bot replies with the invoice link **and** a "⭐ Pay 1400 Stars" button.
-Once the user pays, the bot replies with a confirmation and (if `ADMIN_CHAT_ID`
-is set) DMs the admin. Payment data is also kept in memory and queryable via
-`/status <payload>`.
+The bot replies with the invoice link plus a payment button. Once the user
+pays:
+
+- The bot replies `✅ Payment received!` with the charge id.
+- A `PaymentRecord` is stored in `PAID_ORDERS` (in memory).
+- If `ADMIN_CHAT_ID` is set, the admin is DM'd.
 
 ### B. Just generate a link from the CLI
 
-If you only need the URL (e.g. to put into your own web page), use:
-
 ```bash
-uv run python create_invoice.py \
-    --title "Plan - Basic" \
-    --description "Monthly access" \
-    --stars 1400
+# Stars
+uv run python create_invoice.py stars \
+    --title "Plan - Basic" --description "Monthly plan" --stars 1400
+
+# USD via your configured provider
+uv run python create_invoice.py fiat \
+    --title "Plan - Basic" --description "Monthly plan" \
+    --currency USD --amount 9.99
 ```
 
 Output:
@@ -73,27 +100,43 @@ Invoice URL : https://t.me/$8T-Xwi0VYFeVDAAABzfGCSlot30
 Payload     : order_AbCdEf123...
 ```
 
-You still need the bot from option A (or your own webhook) running somewhere to
-catch the `successful_payment` callback when the user actually pays — Telegram
-sends that update only to the bot that issued the invoice.
+You still need the bot from option A (or your own webhook) running so the
+`successful_payment` callback is received — Telegram sends it to the bot
+that issued the invoice.
+
+### Testing fiat (Stripe)
+
+In BotFather use the **Test** Stripe token. Telegram's payment sheet will
+then accept Stripe test cards, e.g.:
+
+```
+Card  : 4242 4242 4242 4242
+Exp   : any future date
+CVC   : any 3 digits
+ZIP   : any
+```
 
 ## Going to production
 
-The `main.py` shipped here uses long polling and an in-memory ledger, which is
-fine for development. For production you should:
+The `main.py` shipped here uses long polling and an in-memory ledger, which
+is fine for development. For production you should:
 
 - **Persist orders** (`PAID_ORDERS` / `PENDING_ORDERS`) to a real database.
 - **Use webhooks** instead of polling: `Application.run_webhook(...)` or your
   own HTTP framework calling `bot.process_update(...)`.
-- **Be idempotent** in `on_successful_payment` — Telegram may redeliver if your
-  webhook returns non-2xx.
-- **Verify** the `invoice_payload` against what you stored when the link was
-  created, to avoid replay/forging by malformed clients.
+- **Be idempotent** in `on_successful_payment` — Telegram may redeliver if
+  your webhook returns non-2xx.
+- **Verify** that the `pre_checkout_query`'s `currency` and `total_amount`
+  match the order you created (already done here).
 - **Always answer** `pre_checkout_query` within 10 seconds; otherwise the
   charge is reverted.
+- For fiat, **handle disputes/refunds in your provider's dashboard**, not via
+  Bot API. Store `provider_payment_charge_id` so you can find the charge
+  there.
 
 ## Files
 
-- `main.py` — the polling bot, including pre-checkout and successful-payment handlers.
-- `create_invoice.py` — standalone CLI that just creates the invoice URL.
+- `main.py` — polling bot with `pre_checkout` and `successful_payment` handlers
+  for both Stars and fiat.
+- `create_invoice.py` — standalone CLI to mint invoice URLs.
 - `.env.example` — required environment variables.

@@ -34,16 +34,26 @@ internal order id and use it to reconcile the payment with whatever you sold.
 | `currency`            | `"XTR"`                                    | ISO 4217, e.g. `"USD"`                                                                  |
 | `provider_token`      | `""` (must be empty)                       | required, from BotFather                                                                |
 | Amount encoding       | integer star count (e.g. `1400`)           | integer minor units (`$9.99` → `999`; `¥1000` → `1000`)                                 |
-| Pay sheet             | "⭐ Pay X Stars" — instant in Telegram     | "Pay $9.99" — collects card via Stripe (or other provider)                              |
-| Refunds               | `bot.refund_star_payment(...)`             | provider dashboard (e.g. Stripe Dashboard)                                              |
+| Pay sheet             | "⭐ Pay X Stars" — instant in Telegram     | "Pay $9.99" — collects card via your provider (Stripe / Smart Glocal / ...)             |
+| Refunds               | `bot.refund_star_payment(...)`             | provider dashboard (e.g. Stripe / Smart Glocal merchant console)                        |
 | Where it works        | Anywhere Telegram works                    | Wherever your provider supports cards                                                   |
 
 ## Prerequisites
 
 1. Create a bot with [@BotFather](https://t.me/BotFather) and copy its token.
 2. **For fiat only:** in BotFather, `My Bots → <bot> → Payments`, pick a
-   provider (Stripe is the easiest for USD/EUR), and copy the **Test** token
-   for development. Stars don't need this step.
+   provider, and copy the **Test** token for development. Stars don't need
+   this step.
+
+   The list of providers BotFather offers depends on your region. Common ones:
+
+   - **Stripe** — global, USD/EUR/etc. (not always offered, e.g. not visible
+     to many CN/RU accounts).
+   - **Smart Glocal** — supports USD/EUR/RUB and is widely available.
+   - **YooKassa**, **PayMaster**, **Tranzzo**, **LiqPay**, etc.
+
+   You only need **one**. The bot code in this repo is provider-agnostic —
+   any token works the same way.
 3. Python 3.12 and [uv](https://docs.astral.sh/uv/).
 
 ## Setup
@@ -104,17 +114,20 @@ You still need the bot from option A (or your own webhook) running so the
 `successful_payment` callback is received — Telegram sends it to the bot
 that issued the invoice.
 
-### Testing fiat (Stripe)
+### Testing fiat
 
-In BotFather use the **Test** Stripe token. Telegram's payment sheet will
-then accept Stripe test cards, e.g.:
+Use the **Test** token from your provider in BotFather. Each provider has
+its own test card numbers — most accept the dummy Visa cards below.
 
-```
-Card  : 4242 4242 4242 4242
-Exp   : any future date
-CVC   : any 3 digits
-ZIP   : any
-```
+| Provider     | Card                  | Exp           | CVC   | 3-DS code  |
+| ------------ | --------------------- | ------------- | ----- | ---------- |
+| Stripe       | `4242 4242 4242 4242` | any future    | any 3 | n/a        |
+| Smart Glocal | `4111 1111 1111 1111` | any future    | `123` | `12345678` |
+| YooKassa     | `5555 5555 5555 4444` | any future    | any 3 | `12345678` |
+
+If a charge is declined, double-check that you used the **Test** token (live
+tokens reject test cards). Switch to the live token only after end-to-end
+testing.
 
 ## Going to production
 
